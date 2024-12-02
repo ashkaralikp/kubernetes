@@ -1,7 +1,6 @@
 Setting Up a Kubernetes Multi-Master Cluster with External ETCD and HAProxy
 Introduction:
-In this guide, I demonstrate how to configure a highly available Kubernetes multi-master cluster with external ETCD and HAProxy. 
-This setup ensures fault tolerance and scalability for production-grade environments.
+In this guide, I demonstrate how to configure a highly available Kubernetes multi-master cluster with external ETCD and HAProxy. This setup ensures fault tolerance and scalability for production-grade environments.
 ________________________________________
 Environment Details
 •	OS: Ubuntu 22.04.5 LTS (Jammy Jellyfish)
@@ -28,14 +27,14 @@ Instead of relying on DNS, update the /etc/hosts file on all nodes.
 
 Add the following details:
 vim /etc/hosts
-10.200.100.50 ha ha.example.com
-10.200.100.51 master01 master01.example.com
-10.200.100.52 master02 master02.example.com
-10.200.100.53 master03 master03.example.com
-10.200.100.54 node01 node01.example.com
-10.200.100.55 node02 node02.example.com
-10.200.100.56 node03 node03.example.com
-10.200.100.57 devops devops.example.com
+10.x.x.50 ha ha.example.com
+10.x.x.51 master01 master01.example.com
+10.x.x.52 master02 master02.example.com
+10.x.x.53 master03 master03.example.com
+10.x.x.54 node01 node01.example.com
+10.x.x.55 node02 node02.example.com
+10.x.x.56 node03 node03.example.com
+10.x.x.57 devops devops.example.com
 :wq
 4.	Verify System Communication
 o	Ensure all nodes can ping each other using their hostnames and IPs.
@@ -53,7 +52,7 @@ Open the HAProxy configuration file:
 Add the following configuration at the end of the file:
 vim /etc/haproxy/haproxy.cfg
 frontend kubernetes
-    bind 10.200.100.50:6443
+    bind 10.x.x.50:6443
     option tcplog
     mode tcp
     default_backend kubernetes-master-nodes
@@ -62,17 +61,16 @@ backend kubernetes-master-nodes
     mode tcp
     balance roundrobin
     option tcp-check
-    server master01 10.200.100.51:6443 check fall 3 rise 2
-    server master02 10.200.100.52:6443 check fall 3 rise 2
-    server master03 10.200.100.53:6443 check fall 3 rise 2
+    server master01 10.x.x.51:6443 check fall 3 rise 2
+    server master02 10.x.x.52:6443 check fall 3 rise 2
+    server master03 10.x.x.53:6443 check fall 3 rise 2
 :wq
 3.	Enable and Start HAProxy
 Save the file and apply the configuration:
 systemctl enable --now haproxy
 
 Phase 3: Install and configure containerd
-This phase outlines how to install and configure containerd on all Kubernetes nodes (master01, master02, master03, node01, node02, and node03). 
-Follow these steps carefully for a seamless setup:
+This phase outlines how to install and configure containerd on all Kubernetes nodes (master01, master02, master03, node01, node02, and node03). Follow these steps carefully for a seamless setup:
 Docker reference URL: https://docs.docker.com/engine/install/ubuntu/
 ________________________________________
 Step 1: Uninstall Conflicting Packages
@@ -148,8 +146,7 @@ systemctl restart containerd
 2.	Verify the status:
 systemctl status containerd
 Phase 4: Install Kubernetes
-This phase explains how to install Kubernetes (GitVersion: v1.31.3, the latest version as of this writing) 
-on all cluster nodes (master01, master02, master03, node01, node02, node03). Follow these steps carefully for a seamless installation.
+This phase explains how to install Kubernetes (GitVersion: v1.31.3, the latest version as of this writing) on all cluster nodes (master01, master02, master03, node01, node02, node03). Follow these steps carefully for a seamless installation.
 For reference URL : https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/install-kubeadm/
 ________________________________________
 Step 1: Disable Swap
@@ -266,9 +263,9 @@ cat > etcd-csr.json <<EOF
   "hosts": [
     "localhost",
     "127.0.0.1",
-    "10.200.100.51",
-    "10.200.100.52",
-    "10.200.100.53"
+    "10.x.x.51",
+    "10.x.x.52",
+    "10.x.x.53"
   ],
   "key": {
     "algo": "rsa",
@@ -291,7 +288,7 @@ EOF
 cfssl gencert -ca=ca.pem -ca-key=ca-key.pem -config=ca-config.json -profile=etcd etcd-csr.json | cfssljson -bare etcd
 
 7.	Copy Certificates to Other Masters
-declare -a NODES=(10.200.100.52 10.200.100.53)
+declare -a NODES=(10.x.x.52 10.x.x.53)
 for node in "${NODES[@]}"; do
     scp ca.pem etcd.pem etcd-key.pem ashkar@$node:
 done
@@ -332,7 +329,7 @@ Description=etcd
 Documentation=https://github.com/coreos
 [Service]
 ExecStart=/usr/local/bin/etcd \
-  --name 10.200.100.51 \
+  --name 10.x.x.51 \
   --cert-file=/etc/etcd/pki/etcd.pem \
   --key-file=/etc/etcd/pki/etcd-key.pem \
   --peer-cert-file=/etc/etcd/pki/etcd.pem \
@@ -341,12 +338,12 @@ ExecStart=/usr/local/bin/etcd \
   --peer-trusted-ca-file=/etc/etcd/pki/ca.pem \
   --peer-client-cert-auth \
   --client-cert-auth \
-  --initial-advertise-peer-urls https://10.200.100.51:2380 \
-  --listen-peer-urls https://10.200.100.51:2380 \
-  --listen-client-urls https://10.200.100.51:2379,https://127.0.0.1:2379 \
-  --advertise-client-urls https://10.200.100.51:2379 \
+  --initial-advertise-peer-urls https://10.x.x.51:2380 \
+  --listen-peer-urls https://10.x.x.51:2380 \
+  --listen-client-urls https://10.x.x.51:2379,https://127.0.0.1:2379 \
+  --advertise-client-urls https://10.x.x.51:2379 \
   --initial-cluster-token etcd-cluster-0 \
-  --initial-cluster 10.200.100.51=https://10.200.100.51:2380,10.200.100.52=https://10.200.100.52:2380,10.200.100.53=https://10.200.100.53:2380 \
+  --initial-cluster 10.x.x.51=https://10.x.x.51:2380,10.x.x.52=https://10.x.x.52:2380,10.x.x.53=https://10.x.x.53:2380 \
   --initial-cluster-state new \
   --data-dir=/var/lib/etcd
 Restart=on-failure
@@ -374,7 +371,7 @@ Documentation=https://github.com/coreos
 
 [Service]
 ExecStart=/usr/local/bin/etcd \
-  --name 10.200.100.52 \
+  --name 10.x.x.52 \
   --cert-file=/etc/etcd/pki/etcd.pem \
   --key-file=/etc/etcd/pki/etcd-key.pem \
   --peer-cert-file=/etc/etcd/pki/etcd.pem \
@@ -383,12 +380,12 @@ ExecStart=/usr/local/bin/etcd \
   --peer-trusted-ca-file=/etc/etcd/pki/ca.pem \
   --peer-client-cert-auth \
   --client-cert-auth \
-  --initial-advertise-peer-urls https://10.200.100.52:2380 \
-  --listen-peer-urls https://10.200.100.52:2380 \
-  --listen-client-urls https://10.200.100.52:2379,https://127.0.0.1:2379 \
-  --advertise-client-urls https://10.200.100.52:2379 \
+  --initial-advertise-peer-urls https://10.x.x.52:2380 \
+  --listen-peer-urls https://10.x.x.52:2380 \
+  --listen-client-urls https://10.x.x.52:2379,https://127.0.0.1:2379 \
+  --advertise-client-urls https://10.x.x.52:2379 \
   --initial-cluster-token etcd-cluster-0 \
-  --initial-cluster 10.200.100.51=https://10.200.100.51:2380,10.200.100.52=https://10.200.100.52:2380,10.200.100.53=https://10.200.100.53:2380 \
+  --initial-cluster 10.x.x.51=https://10.x.x.51:2380,10.x.x.52=https://10.x.x.52:2380,10.x.x.53=https://10.x.x.53:2380 \
   --initial-cluster-state new \
   --data-dir=/var/lib/etcd
 Restart=on-failure
@@ -405,7 +402,7 @@ Documentation=https://github.com/coreos
 
 [Service]
 ExecStart=/usr/local/bin/etcd \
-  --name 10.200.100.53 \
+  --name 10.x.x.53 \
   --cert-file=/etc/etcd/pki/etcd.pem \
   --key-file=/etc/etcd/pki/etcd-key.pem \
   --peer-cert-file=/etc/etcd/pki/etcd.pem \
@@ -414,12 +411,12 @@ ExecStart=/usr/local/bin/etcd \
   --peer-trusted-ca-file=/etc/etcd/pki/ca.pem \
   --peer-client-cert-auth \
   --client-cert-auth \
-  --initial-advertise-peer-urls https://10.200.100.53:2380 \
-  --listen-peer-urls https://10.200.100.53:2380 \
-  --listen-client-urls https://10.200.100.53:2379,https://127.0.0.1:2379 \
-  --advertise-client-urls https://10.200.100.53:2379 \
+  --initial-advertise-peer-urls https://10.x.x.53:2380 \
+  --listen-peer-urls https://10.x.x.53:2380 \
+  --listen-client-urls https://10.x.x.53:2379,https://127.0.0.1:2379 \
+  --advertise-client-urls https://10.x.x.53:2379 \
   --initial-cluster-token etcd-cluster-0 \
-  --initial-cluster 10.200.100.51=https://10.200.100.51:2380,10.200.100.52=https://10.200.100.52:2380,10.200.100.53=https://10.200.100.53:2380 \
+  --initial-cluster 10.x.x.51=https://10.x.x.51:2380,10.x.x.52=https://10.x.x.52:2380,10.x.x.53=https://10.x.x.53:2380 \
   --initial-cluster-state new \
   --data-dir=/var/lib/etcd
 Restart=on-failure
@@ -441,7 +438,7 @@ ETCDCTL_API=3 etcdctl \
   --key=/etc/etcd/pki/etcd-key.pem \
   member list
 
-ETCDCTL_API=3 etcdctl --endpoints=https://10.200.100.51:2379,https://10.200.100.52:2379,https://10.200.100.53:2379 --cacert=/etc/etcd/pki/ca.pem --cert=/etc/etcd/pki/etcd.pem --key=/etc/etcd/pki/etcd-key.pem endpoint health
+ETCDCTL_API=3 etcdctl --endpoints=https://10.x.x.51:2379,https://10.x.x.52:2379,https://10.x.x.53:2379 --cacert=/etc/etcd/pki/ca.pem --cert=/etc/etcd/pki/etcd.pem --key=/etc/etcd/pki/etcd-key.pem endpoint health
 
 Phase 6: Initializing Kubernetes Cluster using Kubeadm on Master Nodes
 ________________________________________
@@ -452,13 +449,13 @@ cat <<EOF > config.yaml
 apiVersion: kubeadm.k8s.io/v1beta3
 kind: ClusterConfiguration
 kubernetesVersion: stable
-controlPlaneEndpoint: "10.200.100.50:6443"  # This is correct for your HAProxy
+controlPlaneEndpoint: "10.x.x.50:6443"  # This is correct for your HAProxy
 etcd:
   external:
     endpoints:
-    - https://10.200.100.51:2379
-    - https://10.200.100.52:2379
-    - https://10.200.100.53:2379
+    - https://10.x.x.51:2379
+    - https://10.x.x.52:2379
+    - https://10.x.x.53:2379
     caFile: /etc/etcd/pki/ca.pem
     certFile: /etc/etcd/pki/etcd.pem
     keyFile: /etc/etcd/pki/etcd-key.pem
@@ -468,18 +465,18 @@ apiServer:
   extraArgs:
     apiserver-count: "3"
   certSANs:
-  - 10.200.100.50    # HAProxy IP
-  - 10.200.100.51    # Added Master01
-  - 10.200.100.52    # Added Master02
-  - 10.200.100.53    # Added Master03
+  - 10.x.x.50    # HAProxy IP
+  - 10.x.x.51    # Added Master01
+  - 10.x.x.52    # Added Master02
+  - 10.x.x.53    # Added Master03
   - 127.0.0.1        # Added localhost IP
 EOF
 2.	Run Kubeadm Initialization: Initialize the Kubernetes master on Master01 with the provided configuration file:
 kubeadm init --config=config.yaml --v=5
 After initialization:-
 3.	Copy Kubernetes PKI to Remote Servers: After successful initialization, copy the Kubernetes PKI directory to Master02 and Master03 using sshpass:
-scp -r /etc/kubernetes/pki ashkar@10.200.100.52:~
-scp -r /etc/kubernetes/pki ashkar@10.200.100.53:~
+scp -r /etc/kubernetes/pki ashkar@10.x.x.52:~
+scp -r /etc/kubernetes/pki ashkar@10.x.x.53:~
 4.	Set up Kubernetes Configuration for the Current User: On Master01, configure Kubernetes to use the admin.conf file for kubectl:
 mkdir -p $HOME/.kube
 sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
@@ -495,13 +492,13 @@ cat <<EOF > config.yaml
 apiVersion: kubeadm.k8s.io/v1beta3
 kind: ClusterConfiguration
 kubernetesVersion: stable
-controlPlaneEndpoint: "10.200.100.50:6443"  # This is correct for your HAProxy
+controlPlaneEndpoint: "10.x.x.50:6443"  # This is correct for your HAProxy
 etcd:
   external:
     endpoints:
-    - https://10.200.100.51:2379
-    - https://10.200.100.52:2379
-    - https://10.200.100.53:2379
+    - https://10.x.x.51:2379
+    - https://10.x.x.52:2379
+    - https://10.x.x.53:2379
     caFile: /etc/etcd/pki/ca.pem
     certFile: /etc/etcd/pki/etcd.pem
     keyFile: /etc/etcd/pki/etcd-key.pem
@@ -511,10 +508,10 @@ apiServer:
   extraArgs:
     apiserver-count: "3"
   certSANs:
-  - 10.200.100.50    # HAProxy IP
-  - 10.200.100.51    # Added Master01
-  - 10.200.100.52    # Added Master02
-  - 10.200.100.53    # Added Master03
+  - 10.x.x.50    # HAProxy IP
+  - 10.x.x.51    # Added Master01
+  - 10.x.x.52    # Added Master02
+  - 10.x.x.53    # Added Master03
   - 127.0.0.1        # Added localhost IP
 EOF
 3.	Run Kubeadm Initialization on Both Master02 and Master03: Initialize Kubernetes on both Master02 and Master03 using the same configuration file:
@@ -537,7 +534,7 @@ Step 1: Get the Node Join Command on Master01
 On Master01, run: if needed 
 kubeadm token create --print-join-command #if need
 The output will look something like:
-kubeadm join 10.200.100.50:6443 --token <token> --discovery-token-ca-cert-hash sha256:<hash>
+kubeadm join 10.x.x.50:6443 --token <token> --discovery-token-ca-cert-hash sha256:<hash>
 
 Step 1: Verify Node Status
 Before installing the network plugin, verify the status of all your nodes:
@@ -679,9 +676,9 @@ Step 4: Test the Service
 Access the service using the NodePort:
 1.	Use curl to access the service from Master01 or any other node:
 curl http://<Node-IP>:<NodePort>
-Replace <Node-IP> with the IP address of any node (e.g., 10.200.100.51) and <NodePort> with the port assigned (e.g., 32723).
+Replace <Node-IP> with the IP address of any node (e.g., 10.x.x.51) and <NodePort> with the port assigned (e.g., 32723).
 Example command:
-curl http://10.200.100.51:32723
+curl http://10.x.x.51:32723
 2.	Expected Output:
 
 <!DOCTYPE html>
@@ -700,8 +697,6 @@ font-family: Tahoma, Verdana, Arial, sans-serif; }
 working. Further configuration is required.</p>
 ...
 </html>
-
-
 Troubleshooting Kubernetes Multi-Master Cluster Setup
 When setting up a Kubernetes multi-master cluster, here are common issues and their resolutions:
 ________________________________________
