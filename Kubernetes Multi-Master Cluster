@@ -1,0 +1,729 @@
+Setting Up a Kubernetes Multi-Master Cluster with External ETCD and HAProxy
+Introduction:
+In this guide, I demonstrate how to configure a highly available Kubernetes multi-master cluster with external ETCD and HAProxy. 
+This setup ensures fault tolerance and scalability for production-grade environments.
+________________________________________
+Environment Details
+•	OS: Ubuntu 22.04.5 LTS (Jammy Jellyfish)
+•	Number of VMs: 7
+o	1 HAProxy Node
+o	3 Master Nodes
+o	3 Worker Nodes
+o	1 Additional Host (devops.example.com) for other purposes.
+•	ETCD Configuration: External ETCD hosted on master01, master02, and master03.
+Hardware configuration is as follows:
+•	vCPU: 4 (virtual CPUs)
+•	RAM: 4 GiB (Gigabytes of memory)
+•	Disk: 25 GiB per node
+
+________________________________________
+Setup Phases
+Phase 1: Initial System Configuration
+1.	Install and Configure OS
+o	Install Ubuntu 22.04.5 LTS on all nodes.
+2.	Set Static IP Addresses
+Configure each node with static IPs according to your network plan.
+3.	Modify /etc/hosts for Name Resolution
+Instead of relying on DNS, update the /etc/hosts file on all nodes.
+
+Add the following details:
+vim /etc/hosts
+10.200.100.50 ha ha.example.com
+10.200.100.51 master01 master01.example.com
+10.200.100.52 master02 master02.example.com
+10.200.100.53 master03 master03.example.com
+10.200.100.54 node01 node01.example.com
+10.200.100.55 node02 node02.example.com
+10.200.100.56 node03 node03.example.com
+10.200.100.57 devops devops.example.com
+:wq
+4.	Verify System Communication
+o	Ensure all nodes can ping each other using their hostnames and IPs.
+o	Confirm internet access on all nodes.
+________________________________________
+Phase 2: Install and Configure HAProxy
+1.	Update and Install HAProxy
+Run the following commands on the HAProxy node:
+apt-get update
+apt-get install -y haproxy
+
+2.	Edit HAProxy Configuration
+Open the HAProxy configuration file:
+
+Add the following configuration at the end of the file:
+vim /etc/haproxy/haproxy.cfg
+frontend kubernetes
+    bind 10.200.100.50:6443
+    option tcplog
+    mode tcp
+    default_backend kubernetes-master-nodes
+
+backend kubernetes-master-nodes
+    mode tcp
+    balance roundrobin
+    option tcp-check
+    server master01 10.200.100.51:6443 check fall 3 rise 2
+    server master02 10.200.100.52:6443 check fall 3 rise 2
+    server master03 10.200.100.53:6443 check fall 3 rise 2
+:wq
+3.	Enable and Start HAProxy
+Save the file and apply the configuration:
+systemctl enable --now haproxy
+
+Phase 3: Install and configure containerd
+This phase outlines how to install and configure containerd on all Kubernetes nodes (master01, master02, master03, node01, node02, and node03). 
+Follow these steps carefully for a seamless setup:
+Docker reference URL: https://docs.docker.com/engine/install/ubuntu/
+________________________________________
+Step 1: Uninstall Conflicting Packages
+Remove any pre-installed packages that conflict with containerd:
+# for pkg in docker.io docker-doc docker-compose docker-compose-v2 podman-docker containerd runc; do sudo apt-get remove $pkg; done
+________________________________________
+
+
+
+Step 2: Add Docker’s GPG Key and Repository
+1.	Install dependencies:
+sudo apt-get update
+sudo apt-get install -y ca-certificates curl
+2.	Add Docker’s GPG key:
+sudo install -m 0755 -d /etc/apt/keyrings
+sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+sudo chmod a+r /etc/apt/keyrings/docker.asc
+3.	Add Docker’s repository:
+# Add the repository to Apt sources:
+echo \
+  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu \
+  $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
+  sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+sudo apt-get update
+________________________________________
+Step 3: Install containerd
+sudo apt-get install -y containerd.io
+________________________________________
+Step 4: Load Required Kernel Modules
+1.	Load the necessary modules:
+modprobe overlay
+modprobe br_netfilter
+2.	Add these modules to the auto-load configuration:
+Add the following lines:
+
+
+vim /etc/modules-load.d/containerd.conf
+overlay
+br_netfilter
+Save and exit (:wq).
+Apply the changes:
+sysctl --system
+________________________________________
+Step 5: Configure Kernel Parameters for Kubernetes Networking
+1.	Open the sysctl configuration file:
+
+Add the following lines:
+vim /etc/sysctl.d/kubernetes.conf
+net.bridge.bridge-nf-call-ip6tables = 1
+net.bridge.bridge-nf-call-iptables = 1
+net.ipv4.ip_forward = 1
+Save and exit (:wq).
+Apply the changes:
+sysctl --system
+________________________________________
+Step 6: Generate containerd Default Configuration
+1.	Create the required configuration directory:
+mkdir -p /etc/containerd
+2.	Generate the default containerd configuration:
+containerd config default > /etc/containerd/config.toml
+3.	Edit the configuration file to enable systemd cgroups:
+
+Find the section [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc.options] and update:
+
+vim /etc/containerd/config.toml
+SystemdCgroup = true
+Save and exit (:wq).
+________________________________________
+Step 7: Enable and Start containerd
+1.	Enable containerd to start on boot and restart it:
+systemctl enable --now containerd
+systemctl restart containerd
+2.	Verify the status:
+systemctl status containerd
+Phase 4: Install Kubernetes
+This phase explains how to install Kubernetes (GitVersion: v1.31.3, the latest version as of this writing) 
+on all cluster nodes (master01, master02, master03, node01, node02, node03). Follow these steps carefully for a seamless installation.
+For reference URL : https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/install-kubeadm/
+________________________________________
+Step 1: Disable Swap
+Kubernetes requires swap to be disabled to ensure proper operation.
+1.	Open the fstab file for editing:
+Comment out the swap entry by adding a # at the beginning of the line.
+
+vim /etc/fstab
+# /swapfile swap swap defaults 0 0
+Save the file (:wq).
+2.	Turn off swap immediately without rebooting:
+swapoff -a
+________________________________________
+Step 2: Install Required Dependencies
+Update the system and install necessary packages:
+sudo apt-get update
+sudo apt-get install -y apt-transport-https ca-certificates curl gpg
+________________________________________
+Step 3: Add Kubernetes Package Repository
+1.	Create a secure directory for storing the Kubernetes GPG key:
+mkdir -p -m 755 /etc/apt/keyrings
+2.	Download the Kubernetes GPG key and save it:
+curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.31/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+3.	Add the Kubernetes package repository to your system:
+echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.31/deb/ /' | sudo tee /etc/apt/sources.list.d/kubernetes.list
+________________________________________
+Step 4: Install Kubernetes Components
+Update the package index and install kubelet, kubeadm, and kubectl:
+sudo apt-get update
+sudo apt-get install -y kubelet kubeadm kubectl
+________________________________________
+Step 5: Enable kubelet Service
+Enable the kubelet service so it starts automatically at boot:
+sudo systemctl enable --now kubelet
+________________________________________
+
+
+
+
+Verification
+1.	Check the installed versions of Kubernetes components:
+kubeadm version
+kubectl version --client
+kubelet –version
+
+Phase 5: Install and Configure External etcd on Master01, Master02, and Master03 with SSL/TLS
+________________________________________
+Step 1: Configure Certificate on Master01
+1.	Install CFSSL Tools
+Download and install CFSSL, CFSSLJSON, and CFSSL-CERTINFO:
+curl -L -o /usr/local/bin/cfssl https://github.com/cloudflare/cfssl/releases/download/v1.6.4/cfssl_1.6.4_linux_amd64
+curl -L -o /usr/local/bin/cfssljson https://github.com/cloudflare/cfssl/releases/download/v1.6.4/cfssljson_1.6.4_linux_amd64
+curl -L -o /usr/local/bin/cfssl-certinfo https://github.com/cloudflare/cfssl/releases/download/v1.6.4/cfssl-certinfo_1.6.4_linux_amd64
+chmod +x /usr/local/bin/cfssl*
+2.	Verify Installation
+Ensure the binaries are installed correctly:
+cfssl version
+cfssljson -version
+cfssl-certinfo -version
+
+
+
+
+3.	Create CA Config File
+Create a file ca-config.json:
+
+cat > ca-config.json <<EOF
+{
+    "signing": {
+        "default": {
+            "expiry": "8760h"
+        },
+        "profiles": {
+            "etcd": {
+                "expiry": "8760h",
+                "usages": ["signing", "key encipherment", "server auth", "client auth"]
+            }
+        }
+    }
+}
+EOF
+
+
+
+Create CA Certificate Signing Request (CSR)
+Create a file ca-csr.json:
+
+cat > ca-csr.json <<EOF
+{
+  "CN": "etcd cluster",
+  "key": {
+    "algo": "rsa",
+    "size": 2048
+  },
+  "names": [
+    {
+      "C": "IN",
+      "L": "Calicut",
+      "O": "Kubernetes",
+      "OU": "ETCD-CA",
+      "ST": "Kerala"
+    }
+  ]
+}
+EOF
+4.	Generate CA Certificate and Key
+cfssl gencert -initca ca-csr.json | cfssljson -bare ca
+
+5.	Create etcd Server CSR
+Create a file etcd-csr.json:
+cat > etcd-csr.json <<EOF
+{
+  "CN": "etcd",
+  "hosts": [
+    "localhost",
+    "127.0.0.1",
+    "10.200.100.51",
+    "10.200.100.52",
+    "10.200.100.53"
+  ],
+  "key": {
+    "algo": "rsa",
+    "size": 2048
+  },
+  "names": [
+    {
+      "C": "IN",
+      "L": "Calicut",
+      "O": "Kubernetes",
+      "OU": "etcd",
+      "ST": "Kerala"
+    }
+  ]
+}
+EOF
+
+
+6.	Generate etcd Certificate and Key
+cfssl gencert -ca=ca.pem -ca-key=ca-key.pem -config=ca-config.json -profile=etcd etcd-csr.json | cfssljson -bare etcd
+
+7.	Copy Certificates to Other Masters
+declare -a NODES=(10.200.100.52 10.200.100.53)
+for node in "${NODES[@]}"; do
+    scp ca.pem etcd.pem etcd-key.pem ashkar@$node:
+done
+
+
+8.	Move Certificates to Secure Location
+Master01
+mkdir -p /etc/etcd/pki
+mv ca.pem etcd-key.pem etcd.pem /etc/etcd/pki/
+chown -R root:root /etc/etcd/pki/
+chmod 644 /etc/etcd/pki/ca.pem
+chmod 644 /etc/etcd/pki/etcd.pem
+chmod 600 /etc/etcd/pki/etcd-key.pem
+________________________________________
+Step 2: Install etcd on All Masters
+1.	Download and Install etcd
+ETCD_VER=v3.5.11
+wget -q --show-progress "https://github.com/etcd-io/etcd/releases/download/${ETCD_VER}/etcd-${ETCD_VER}-linux-amd64.tar.gz"
+tar zxf etcd-${ETCD_VER}-linux-amd64.tar.gz
+mv etcd-${ETCD_VER}-linux-amd64/etcd* /usr/local/bin/
+rm -rf etcd*
+2.	Create etcd Data Directory
+mkdir -p /var/lib/etcd
+
+
+
+
+
+
+
+
+Create etcd Service File
+For Master01:
+vim /etc/systemd/system/etcd.service
+Paste the following:
+[Unit]
+Description=etcd
+Documentation=https://github.com/coreos
+[Service]
+ExecStart=/usr/local/bin/etcd \
+  --name 10.200.100.51 \
+  --cert-file=/etc/etcd/pki/etcd.pem \
+  --key-file=/etc/etcd/pki/etcd-key.pem \
+  --peer-cert-file=/etc/etcd/pki/etcd.pem \
+  --peer-key-file=/etc/etcd/pki/etcd-key.pem \
+  --trusted-ca-file=/etc/etcd/pki/ca.pem \
+  --peer-trusted-ca-file=/etc/etcd/pki/ca.pem \
+  --peer-client-cert-auth \
+  --client-cert-auth \
+  --initial-advertise-peer-urls https://10.200.100.51:2380 \
+  --listen-peer-urls https://10.200.100.51:2380 \
+  --listen-client-urls https://10.200.100.51:2379,https://127.0.0.1:2379 \
+  --advertise-client-urls https://10.200.100.51:2379 \
+  --initial-cluster-token etcd-cluster-0 \
+  --initial-cluster 10.200.100.51=https://10.200.100.51:2380,10.200.100.52=https://10.200.100.52:2380,10.200.100.53=https://10.200.100.53:2380 \
+  --initial-cluster-state new \
+  --data-dir=/var/lib/etcd
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+
+Repeat the same steps for Master02 and Master03, updating --name, --initial-advertise-peer-urls, and --listen-peer-urls accordingly.
+mkdir -p /etc/etcd/pki
+
+cd /home/ashkar
+sudo mv ca.pem etcd-key.pem etcd.pem /etc/etcd/pki/
+ls -l /etc/etcd/pki/
+chown -R root:root /etc/etcd/pki/
+chmod 644 /etc/etcd/pki/ca.pem
+chmod 644 /etc/etcd/pki/etcd.pem
+chmod 600 /etc/etcd/pki/etcd-key.pem
+ls -l /etc/etcd/pki/
+
+Master02
+[Unit]
+Description=etcd
+Documentation=https://github.com/coreos
+
+[Service]
+ExecStart=/usr/local/bin/etcd \
+  --name 10.200.100.52 \
+  --cert-file=/etc/etcd/pki/etcd.pem \
+  --key-file=/etc/etcd/pki/etcd-key.pem \
+  --peer-cert-file=/etc/etcd/pki/etcd.pem \
+  --peer-key-file=/etc/etcd/pki/etcd-key.pem \
+  --trusted-ca-file=/etc/etcd/pki/ca.pem \
+  --peer-trusted-ca-file=/etc/etcd/pki/ca.pem \
+  --peer-client-cert-auth \
+  --client-cert-auth \
+  --initial-advertise-peer-urls https://10.200.100.52:2380 \
+  --listen-peer-urls https://10.200.100.52:2380 \
+  --listen-client-urls https://10.200.100.52:2379,https://127.0.0.1:2379 \
+  --advertise-client-urls https://10.200.100.52:2379 \
+  --initial-cluster-token etcd-cluster-0 \
+  --initial-cluster 10.200.100.51=https://10.200.100.51:2380,10.200.100.52=https://10.200.100.52:2380,10.200.100.53=https://10.200.100.53:2380 \
+  --initial-cluster-state new \
+  --data-dir=/var/lib/etcd
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+
+Mater03:-
+vim /etc/systemd/system/etcd.service
+[Unit]
+Description=etcd
+Documentation=https://github.com/coreos
+
+[Service]
+ExecStart=/usr/local/bin/etcd \
+  --name 10.200.100.53 \
+  --cert-file=/etc/etcd/pki/etcd.pem \
+  --key-file=/etc/etcd/pki/etcd-key.pem \
+  --peer-cert-file=/etc/etcd/pki/etcd.pem \
+  --peer-key-file=/etc/etcd/pki/etcd-key.pem \
+  --trusted-ca-file=/etc/etcd/pki/ca.pem \
+  --peer-trusted-ca-file=/etc/etcd/pki/ca.pem \
+  --peer-client-cert-auth \
+  --client-cert-auth \
+  --initial-advertise-peer-urls https://10.200.100.53:2380 \
+  --listen-peer-urls https://10.200.100.53:2380 \
+  --listen-client-urls https://10.200.100.53:2379,https://127.0.0.1:2379 \
+  --advertise-client-urls https://10.200.100.53:2379 \
+  --initial-cluster-token etcd-cluster-0 \
+  --initial-cluster 10.200.100.51=https://10.200.100.51:2380,10.200.100.52=https://10.200.100.52:2380,10.200.100.53=https://10.200.100.53:2380 \
+  --initial-cluster-state new \
+  --data-dir=/var/lib/etcd
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+
+All the masters :-
+{
+  systemctl daemon-reload
+  systemctl enable --now etcd
+}
+
+ETCDCTL_API=3 etcdctl \
+  --endpoints=https://127.0.0.1:2379 \
+  --cacert=/etc/etcd/pki/ca.pem \
+  --cert=/etc/etcd/pki/etcd.pem \
+  --key=/etc/etcd/pki/etcd-key.pem \
+  member list
+
+ETCDCTL_API=3 etcdctl --endpoints=https://10.200.100.51:2379,https://10.200.100.52:2379,https://10.200.100.53:2379 --cacert=/etc/etcd/pki/ca.pem --cert=/etc/etcd/pki/etcd.pem --key=/etc/etcd/pki/etcd-key.pem endpoint health
+
+Phase 6: Initializing Kubernetes Cluster using Kubeadm on Master Nodes
+________________________________________
+Master01:
+1.	Create Kubeadm Configuration File: On Master01, create the config.yaml file for Kubernetes initialization. This file configures Kubernetes to use the external etcd cluster and specifies other cluster settings.
+
+cat <<EOF > config.yaml
+apiVersion: kubeadm.k8s.io/v1beta3
+kind: ClusterConfiguration
+kubernetesVersion: stable
+controlPlaneEndpoint: "10.200.100.50:6443"  # This is correct for your HAProxy
+etcd:
+  external:
+    endpoints:
+    - https://10.200.100.51:2379
+    - https://10.200.100.52:2379
+    - https://10.200.100.53:2379
+    caFile: /etc/etcd/pki/ca.pem
+    certFile: /etc/etcd/pki/etcd.pem
+    keyFile: /etc/etcd/pki/etcd-key.pem
+networking:
+  podSubnet: 10.30.0.0/16    
+apiServer:
+  extraArgs:
+    apiserver-count: "3"
+  certSANs:
+  - 10.200.100.50    # HAProxy IP
+  - 10.200.100.51    # Added Master01
+  - 10.200.100.52    # Added Master02
+  - 10.200.100.53    # Added Master03
+  - 127.0.0.1        # Added localhost IP
+EOF
+2.	Run Kubeadm Initialization: Initialize the Kubernetes master on Master01 with the provided configuration file:
+kubeadm init --config=config.yaml --v=5
+After initialization:-
+3.	Copy Kubernetes PKI to Remote Servers: After successful initialization, copy the Kubernetes PKI directory to Master02 and Master03 using sshpass:
+scp -r /etc/kubernetes/pki ashkar@10.200.100.52:~
+scp -r /etc/kubernetes/pki ashkar@10.200.100.53:~
+4.	Set up Kubernetes Configuration for the Current User: On Master01, configure Kubernetes to use the admin.conf file for kubectl:
+mkdir -p $HOME/.kube
+sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+sudo chown $(id -u):$(id -g) $HOME/.kube/config
+Master02 and Master03:
+1.	Prepare Kubernetes PKI: On Master02 and Master03, remove the existing API server certificates and move the copied pki directory to the correct location:
+rm /home/ashkar/pki/apiserver.*
+mv /home/ashkar/pki /etc/kubernetes/
+chown -R root:root /etc/kubernetes/pki/
+ls -l /etc/kubernetes/pki/
+2.	Create Kubeadm Configuration File: On both Master02 and Master03, create the same config.yaml file used for Master01:
+cat <<EOF > config.yaml
+apiVersion: kubeadm.k8s.io/v1beta3
+kind: ClusterConfiguration
+kubernetesVersion: stable
+controlPlaneEndpoint: "10.200.100.50:6443"  # This is correct for your HAProxy
+etcd:
+  external:
+    endpoints:
+    - https://10.200.100.51:2379
+    - https://10.200.100.52:2379
+    - https://10.200.100.53:2379
+    caFile: /etc/etcd/pki/ca.pem
+    certFile: /etc/etcd/pki/etcd.pem
+    keyFile: /etc/etcd/pki/etcd-key.pem
+networking:
+  podSubnet: 10.30.0.0/16    
+apiServer:
+  extraArgs:
+    apiserver-count: "3"
+  certSANs:
+  - 10.200.100.50    # HAProxy IP
+  - 10.200.100.51    # Added Master01
+  - 10.200.100.52    # Added Master02
+  - 10.200.100.53    # Added Master03
+  - 127.0.0.1        # Added localhost IP
+EOF
+3.	Run Kubeadm Initialization on Both Master02 and Master03: Initialize Kubernetes on both Master02 and Master03 using the same configuration file:
+kubeadm init --config=config.yaml --v=5
+4.	Set up Kubernetes Configuration on Both Masters: After initialization, configure kubectl to use the admin.conf file on both Master02 and Master03:
+mkdir -p $HOME/.kube
+sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+sudo chown $(id -u):$(id -g) $HOME/.kube/config
+Enable Autocompletion for kubectl on All Masters:
+1.	Enable Shell Autocompletion for kubectl: On all master nodes, enable autocompletion for kubectl by adding the following to the current shell session and to the .bashrc file for persistent use:
+source <(kubectl completion bash)  # Enable completion for the current shell session
+echo "source <(kubectl completion bash)" >> ~/.bashrc  # Enable permanent completion for future shell sessions
+2.	Ensure bash-completion is Installed: If bash-completion is not already installed, install it:
+sudo apt-get install bash-completion
+Phase 7: Node Installation and Joining the Cluster
+In this phase, you'll copy the Kubernetes node join command from Master01 (or the control plane node) and execute it on all three worker nodes to join them to the Kubernetes cluster.
+________________________________________
+Step 1: Get the Node Join Command on Master01
+1.	Get the Join Command: After initializing the Kubernetes control plane, Master01 will output a command to join the worker nodes to the cluster. This command is crucial for registering the nodes as part of the cluster. You can retrieve the join command from the kubeadm logs:
+On Master01, run: if needed 
+kubeadm token create --print-join-command #if need
+The output will look something like:
+kubeadm join 10.200.100.50:6443 --token <token> --discovery-token-ca-cert-hash sha256:<hash>
+
+Step 1: Verify Node Status
+Before installing the network plugin, verify the status of all your nodes:
+1.	On Master01, run:
+kubectl get nodes
+This should display a list of all nodes in the cluster, with their statuses showing as NotReady. This is expected since the network plugin is not yet installed, and the nodes cannot communicate with each other yet.
+Example output:
+NAME       STATUS     ROLES           AGE     VERSION
+master01   NotReady   control-plane   13m     v1.31.3
+master02   NotReady   control-plane   5m59s   v1.31.3
+master03   NotReady   control-plane   6m5s    v1.31.3
+node01     NotReady   <none>          9s      v1.31.3
+node02     NotReady   <none>          10s     v1.31.3
+node03     NotReady   <none>          9s      v1.31.3
+Phase 8: Reference Links for Weave Network Setup
+The following links provide the documentation and setup steps for using Weave as a network plugin in Kubernetes:
+•	Kubernetes Addons Documentation:
+https://kubernetes.io/docs/concepts/cluster-administration/addons/
+•	Weave Network Documentation:
+https://github.com/rajch/weave#using-weave-on-kubernetes
+________________________________________
+Step 3: Apply the Weave Network Plugin YAML
+To install Weave as the network plugin in your cluster, apply the Weave configuration YAML file:
+1.	On Master01, run:
+kubectl apply -f https://reweave.azurewebsites.net/k8s/v1.29/net.yaml
+This will download and apply the Weave network configuration to your Kubernetes cluster.
+After initialized the pods
+
+kubectl get nodes
+
+Step 4: Verify Installation
+After applying the Weave network YAML, verify that the network plugin is installed and working correctly:
+1.	Check Pod Status:
+Run the following command on Master01 to check if the Weave pods are running in the kube-system namespace:
+kubectl get pods -n kube-system
+You should see the Weave pods listed, and their status should be Running.
+Example output:
+NAME                                   READY   STATUS    RESTARTS   AGE
+weave-net-xxxxxx-xxxx                  2/2     Running   0          1m
+weave-net-xxxxxx-xxxx                  2/2     Running   0          1m
+2.	Check Node Status:
+Now that the network plugin is installed, run the following command again to check the status of the nodes:
+kubectl get nodes
+After a few minutes, the nodes should transition to Ready status, indicating they can communicate with each other:
+Example output:
+NAME       STATUS    ROLES           AGE   VERSION
+master01   Ready     control-plane   30m   v1.31.3
+master02   Ready     control-plane   25m   v1.31.3
+master03   Ready     control-plane   24m   v1.31.3
+node01     Ready     <none>          20m   v1.31.3
+node02     Ready     <none>          19m   v1.31.3
+node03     Ready     <none>          18m   v1.31.3
+Phase 9: Cluster Verification
+In this phase, you'll verify that your Kubernetes cluster is fully functional, with all nodes and core components running as expected.
+________________________________________
+Step 1: Verify Node Status
+1.	On Master01, check the status of all nodes:
+kubectl get nodes
+Example output:
+NAME       STATUS   ROLES           AGE     VERSION
+master01   Ready    control-plane   17m     v1.31.3
+master02   Ready    control-plane   10m     v1.31.3
+master03   Ready    control-plane   10m     v1.31.3
+node01     Ready    <none>          4m43s   v1.31.3
+node02     Ready    <none>          4m44s   v1.31.3
+node03     Ready    <none>          4m43s   v1.31.3
+o	All nodes are in the Ready state, indicating successful initialization and communication between nodes.
+o	Control-plane and worker nodes are properly labeled.
+________________________________________
+Step 2: Verify Pods in kube-system Namespace
+1.	Check the status of all pods in the kube-system namespace:
+kubectl get pods -n kube-system
+Example output:
+NAME                               READY   STATUS    RESTARTS       AGE
+coredns-7c65d6cfc9-pgmf9           1/1     Running   0              18m
+coredns-7c65d6cfc9-ps6b8           1/1     Running   0              18m
+kube-apiserver-master01            1/1     Running   3              18m
+kube-apiserver-master02            1/1     Running   0              11m
+kube-apiserver-master03            1/1     Running   0              11m
+kube-controller-manager-master01   1/1     Running   3              18m
+kube-controller-manager-master02   1/1     Running   0              11m
+kube-controller-manager-master03   1/1     Running   0              11m
+kube-proxy-28cvj                   1/1     Running   0              5m16s
+kube-proxy-5tbv9                   1/1     Running   0              11m
+kube-proxy-9hl69                   1/1     Running   0              11m
+kube-proxy-jwj4s                   1/1     Running   0              5m15s
+kube-proxy-kl4xh                   1/1     Running   0              18m
+kube-proxy-zqfvs                   1/1     Running   0              5m15s
+kube-scheduler-master01            1/1     Running   3              18m
+kube-scheduler-master02            1/1     Running   0              11m
+kube-scheduler-master03            1/1     Running   0              11m
+weave-net-dmzxp                    2/2     Running   0              2m53s
+weave-net-fwkh8                    2/2     Running   1 (105s ago)   2m53s
+weave-net-h5pc6                    2/2     Running   1 (110s ago)   2m53s
+weave-net-ktgrg                    2/2     Running   1 (102s ago)   2m53s
+weave-net-rmb5f                    2/2     Running   1 (114s ago)   2m53s
+weave-net-v4jwd                    2/2     Running   0              2m53s
+o	CoreDNS pods are running (1/1 READY), indicating DNS functionality is working.
+o	Kube-proxy and kube-scheduler components are running on their respective nodes.
+o	Weave Net pods (weave-net-*) are running across all nodes, ensuring network connectivity.
+________________________________________
+Summary
+The cluster is successfully set up and functional:
+1.	All nodes are in a Ready state.
+2.	All necessary control-plane components and worker node services are running.
+3.	The network plugin (Weave Net) is installed and operational.
+4.	DNS and other system services are functioning correctly.
+Phase 10: Testing the Cluster with a Pod and Service
+In this phase, we will test the Kubernetes cluster by deploying a simple Nginx pod and exposing it using a service.
+________________________________________
+Step 1: Create a Pod
+Run the following command on Master01 to deploy an Nginx pod:
+kubectl run myapp --image=nginx
+•	Command Explanation:
+o	kubectl run: Creates a new pod.
+o	myapp: The name of the pod.
+o	--image=nginx: Specifies the Nginx image from Docker Hub.
+________________________________________
+Step 2: Expose the Pod as a Service
+Expose the pod myapp as a service:
+kubectl expose pod myapp --name=myapp-svc --port=80 --type=NodePort --protocol=TCP
+•	Command Explanation:
+o	expose pod: Exposes the pod with a service.
+o	--name=myapp-svc: Names the service as myapp-svc.
+o	--port=80: Specifies the port for the service.
+o	--type=NodePort: Makes the service accessible from outside the cluster.
+o	--protocol=TCP: Uses TCP as the communication protocol.
+________________________________________
+Step 3: Verify the Service
+1.	List the service to confirm it was created successfully:
+kubectl get svc myapp-svc
+Example output:
+NAME        TYPE       CLUSTER-IP       EXTERNAL-IP   PORT(S)        AGE
+myapp-svc   NodePort   10.108.249.194   <none>        80:32723/TCP   7s
+o	Cluster-IP: Internal IP address of the service.
+o	PORT(S): 80:32723/TCP means the service is accessible on port 32723 of any node in the cluster.
+________________________________________
+Step 4: Test the Service
+Access the service using the NodePort:
+1.	Use curl to access the service from Master01 or any other node:
+curl http://<Node-IP>:<NodePort>
+Replace <Node-IP> with the IP address of any node (e.g., 10.200.100.51) and <NodePort> with the port assigned (e.g., 32723).
+Example command:
+curl http://10.200.100.51:32723
+2.	Expected Output:
+
+<!DOCTYPE html>
+<html>
+<head>
+<title>Welcome to nginx!</title>
+<style>
+html { color-scheme: light dark; }
+body { width: 35em; margin: 0 auto;
+font-family: Tahoma, Verdana, Arial, sans-serif; }
+</style>
+</head>
+<body>
+<h1>Welcome to nginx!</h1>
+<p>If you see this page, the nginx web server is successfully installed and
+working. Further configuration is required.</p>
+...
+</html>
+
+
+Troubleshooting Kubernetes Multi-Master Cluster Setup
+When setting up a Kubernetes multi-master cluster, here are common issues and their resolutions:
+________________________________________
+Errors During kubeadm init Execution
+If you encounter issues while running:
+kubeadm init --config=config.yaml --v=5
+Restart All Master Nodes
+sudo reboot
+Kubelet Service Errors
+If the error is related to the kubelet service, stop it and retry the initialization:
+systemctl stop kubelet
+kubeadm init --config=config.yaml --v=5
+________________________________________
+ETCD Database Corruption or Errors
+If you encounter issues with the ETCD database, reset it as follows:
+Stop the ETCD Service
+systemctl stop etcd
+Delete the ETCD Data Directory
+rm -rf /var/lib/etcd
+Restart the ETCD Service
+systemctl start etcd
+systemctl status etcd
+Verify ETCD Health
+
+Thank You.
